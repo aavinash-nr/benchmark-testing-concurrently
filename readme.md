@@ -11,6 +11,7 @@ In the below give function arn and no of concurrent users and duration it need t
 
 
 #### Concurrent Testing: 
+It wait for `10`  mins to fetch the data from cloud watch for the invocations which are happened using this code. 
 ```
 python invoke_concurrently.py --function_arn arn:aws:lambda:region:account-id:function:function-name --concurrent_users 10 --duration 60
 ```
