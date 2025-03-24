@@ -171,6 +171,10 @@ def save_to_csv(file_path, data):
     try:
         df = pd.DataFrame(data)
 
+        if 'FunctionName' in df.columns:
+            columns_order = ['FunctionName'] + [col for col in df.columns if col != 'FunctionName']
+            df = df[columns_order]
+
         file_exists = os.path.isfile(file_path)
 
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
