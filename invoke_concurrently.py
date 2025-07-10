@@ -23,12 +23,11 @@ def invoke_lambda(lambda_client, function_arn, i):
         )
 
         log_result = base64.b64decode(response['LogResult']).decode('utf-8')
-        billed_duration = extract_billed_duration(log_result)
 
         if response['StatusCode'] == 200:
-            print(f"[DEBUG] Invocation {i}: StatusCode=200, Billed Duration={billed_duration} ms")
+            print(f"[DEBUG] Invocation {i}: StatusCode=200")
         
-        return response['StatusCode'], billed_duration
+        return response['StatusCode']
     except Exception as e:
         print(f"[ERROR] Error invoking Lambda {i}: {e}")
         return None, None
@@ -39,7 +38,6 @@ def extract_billed_duration(log):
 
 def invoke_in_parallel(lambda_client, function_arn, concurrent_users, duration):
     start_time = time.time()
-    billed_durations = []
     total_requests = 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrent_users) as executor:
@@ -48,25 +46,36 @@ def invoke_in_parallel(lambda_client, function_arn, concurrent_users, duration):
             total_requests += concurrent_users
             success_count = 0
             for future in concurrent.futures.as_completed(futures):
-                status_code, billed_duration = future.result()
-                if status_code == 200 and billed_duration is not None:
+                status_code = future.result()
+                if status_code == 200 :
                     success_count += 1
-                    billed_durations.append(billed_duration)
 
             print(f"[DEBUG] Cycle completed with {success_count} / {concurrent_users} successful invocations.")
 
     end_time = time.time()
     print(f"[INFO] Total requests sent: {total_requests}")
-    print(f"[INFO] Successful requests: {len(billed_durations)}")
-    return billed_durations, total_requests, start_time, end_time
+    return total_requests, start_time, end_time
 
-def calculate_statistics(billed_durations):
-    avg_billed_duration = statistics.mean(billed_durations)
-    median_billed_duration = statistics.median(billed_durations)
-    p50 = statistics.median(billed_durations)
-    p95 = statistics.quantiles(billed_durations, n=100)[94]
-    p99 = statistics.quantiles(billed_durations, n=100)[98]
-    return avg_billed_duration, median_billed_duration, p50, p95, p99
+def calculate_statistics(durations):
+    if not durations:
+        # Return zeros or None if you have no data to avoid errors during calculation
+        return 0, 0, 0, 0, 0
+
+    try:
+        # Calculate statistical values only if durations list is non-empty
+        avg_billed_duration = statistics.mean(durations)
+        median_billed_duration = statistics.median(durations)
+        # Calculate percentiles using `statistics.quantiles`
+        p50 = statistics.median(durations)  # Equivalent to median
+        # Using `quantiles` to get specific percentiles
+        p95 = statistics.quantiles(durations, n=100)[94]  # 95th percentile
+        p99 = statistics.quantiles(durations, n=100)[98]  # 99th percentile
+        
+        return avg_billed_duration, median_billed_duration, p50, p95, p99
+    except statistics.StatisticsError as e:
+        print(f"[ERROR] Statistics calculation error: {e}")
+        return 0, 0, 0, 0, 0  # Handle empty or invalid data gracefully
+
 
 def query_cloudwatch_logs(log_group_name, start_time, end_time):
     client = boto3.client('logs')
@@ -147,12 +156,13 @@ def convert_to_ist(utc_timestamp):
 def main(function_arn, concurrent_users, duration, log_group_name, output_file):
     lambda_client = boto3.client('lambda')
     
-    billed_durations, total_requests, start_time_utc, end_time_utc = invoke_in_parallel(
+    total_requests, start_time_utc, end_time_utc = invoke_in_parallel(
         lambda_client, function_arn, concurrent_users, duration
     )
-
+    print(f"[INFO] Waiting for {wait_time_before_query} seconds before querying CloudWatch Logs...")
     time.sleep(wait_time_before_query)
-
+    print(f"[INFO] Querying CloudWatch Logs completed.")
+  
     start_time_ist = convert_to_ist(start_time_utc)
     end_time_ist = convert_to_ist(end_time_utc)
     
@@ -179,26 +189,14 @@ def main(function_arn, concurrent_users, duration, log_group_name, output_file):
 
             # Prepare DataFrame for saving
             output_data = {
-                'Statistic': [
-                    'Concurrent Users',
-                    'Total Invocations',
-                    'Average Billed Duration (ms)',
-                    'Minimum Billed Duration (ms)',
-                    'Maximum Billed Duration (ms)',
-                    '50th Percentile Billed Duration (ms)',
-                    '95th Percentile Billed Duration (ms)',
-                    '99th Percentile Billed Duration (ms)'
-                ],
-                'Value': [
-                    concurrent_users,
-                    query_statistics.get('totalInvocations', 0),
-                    query_statistics.get('avgBilledDuration', 0.0),
-                    query_statistics.get('minBilledDuration', 0.0),
-                    query_statistics.get('maxBilledDuration', 0.0),
-                    query_statistics.get('p50BilledDuration', 0.0),
-                    query_statistics.get('p95BilledDuration', 0.0),
-                    query_statistics.get('p99BilledDuration', 0.0)
-                ]
+                'Concurrent Users': [concurrent_users],
+                'Total Invocations': [query_statistics.get('totalInvocations', 0)],
+                'Average Billed Duration (ms)': [query_statistics.get('avgBilledDuration', 0.0)],
+                'Minimum Billed Duration (ms)': [query_statistics.get('minBilledDuration', 0.0)],
+                'Maximum Billed Duration (ms)': [query_statistics.get('maxBilledDuration', 0.0)],
+                '50th Percentile Billed Duration (ms)': [query_statistics.get('p50BilledDuration', 0.0)],
+                '95th Percentile Billed Duration (ms)': [query_statistics.get('p95BilledDuration', 0.0)],
+                '99th Percentile Billed Duration (ms)': [query_statistics.get('p99BilledDuration', 0.0)]
             }
 
             df_results = pd.DataFrame(output_data)
@@ -211,23 +209,6 @@ def main(function_arn, concurrent_users, duration, log_group_name, output_file):
             print("No invocation logs found for the specified time period and log group.")
     except Exception as e:
                 print(f"Error querying CloudWatch Logs: {e}")
-
-    if output_file:
-        try:
-            avg_billed_duration, median_billed_duration, p50, p95, p99 = calculate_statistics(billed_durations)
-            
-            df_detailed = pd.DataFrame({
-                'Statistic': ['Average', 'Median', '50th Percentile', '95th Percentile', '99th Percentile'],
-                'Duration (ms)': [avg_billed_duration, median_billed_duration, p50, p95, p99]
-            })
-
-
-            with open(output_file, 'a') as f:
-                df_detailed.to_csv(f, index=False, header=f.tell()==0)
-
-            print(f"Detailed statistics have been appended to {output_file}.")
-        except Exception as e:
-            print(f"Error writing detailed statistics to CSV file: {e}")
 
 def extract_function_name_from_arn(arn):
     return arn.split(':')[-1]
