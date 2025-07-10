@@ -105,13 +105,23 @@ def query_cloudwatch_logs(function_name, start_time, end_time, cold_start):
     
     if cold_start:
         query_string = """
-        filter @type="REPORT"
-        | filter ispresent(@initDuration)
-        | stats count(@initDuration) as coldStartCount, 
-               pct(@initDuration, 50) as p50Init, 
-               pct(@initDuration, 90) as p90Init, 
-               pct(@initDuration, 99) as p99Init 
-        group by @log
+          fields @timestamp, @requestId, @initDuration, @billedDuration, @duration, @memorySize
+          | filter @type = "REPORT"
+          | filter ispresent(@initDuration)
+          | sort @timestamp asc
+          | limit 10000
+          | stats 
+             count(@initDuration) as coldStartCount,
+             pct(@initDuration, 50) as p50Init,
+             pct(@initDuration, 90) as p90Init,
+             pct(@initDuration, 99) as p99Init,
+             count(@billedDuration) as totalInvocations,
+             avg(@billedDuration) as avgBilledDuration,
+             min(@billedDuration) as minBilledDuration,
+             max(@billedDuration) as maxBilledDuration,
+             percentile(@billedDuration, 50) as p50BilledDuration,
+             percentile(@billedDuration, 95) as p95BilledDuration,
+             percentile(@billedDuration, 99) as p99BilledDuration
         """
     else:
         query_string = """
